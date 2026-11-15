@@ -1,258 +1,168 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Device Tree Source for UF002 / YL_UF002
+ * Device Tree Source for UF002 / YL_UF002 4G LTE USB Dongle
  * PCB: UF002_MB_V02 (20230327)
  * SoC: Qualcomm MSM8909 (Snapdragon 210)
  * PMIC: PM8909
- * RAM: 512 MB LPDDR3 (Kingston 04EMCP04)
- * eMMC: 4 GB (Kingston 04EMCP04)
- * 4G Modem: Qualcomm MDM9x07 (baseband ufi002_ct)
- * WiFi: Qualcomm WCNSS / WCN3620 (pronto)
+ * eMMC: 4GB Kingston 04EMCP04
+ * RAM: 512MB LPDDR3
  *
- * Regulator mapping (from stock Android 3.10 kernel live inspection):
+ * Regulator mapping (from stock Android 3.10 live hardware inspection):
  *   USB VDD_DIG   -> PM8909_L2  @ 1.2V
  *   USB HSUSB_1p8 -> PM8909_L7  @ 1.8V
  *   USB HSUSB_3p3 -> PM8909_L13 @ 3.075V
  *   eMMC vdd-io   -> PM8909_L5  @ 1.8V
  *   eMMC vdd      -> PM8909_L8  @ 2.85V
- *   WCNSS vddxo   -> PM8909_L7  @ 1.8V (shared with USB analog)
- *
- * USB Controller: 78d9000.usb (ChipIdea HDRC / msm_otg)
- * USB driver: msm_hsusb / msm_otg
- *
- * QCDT Match: platform=245(0xf5) variant=65547(0x1000b) subtype=0 pmic=65549
- * (PM8909 ID = 65549 = 0x1000D)
- *
- * Compiled by: Claude (Anthropic) + Antigravity live hardware analysis
- * Date: 2026-11-15
+ *   WCNSS vddxo   -> PM8909_L7  @ 1.8V
  */
 
 /dts-v1/;
 
-#include "msm8909.dtsi"
-#include "pm8909.dtsi"
+#include "qcom-msm8909-pm8909.dtsi"
 
 / {
 	model = "UF002 MB V02 MSM8909 4G WiFi Dongle";
-	compatible = "uf002,msm8909-mb-v02", "qcom,msm8909-qrd", "qcom,msm8909";
-
-	qcom,msm-id = <245 0>;
-	qcom,board-id = <0x1000b 0>;  /* variant=65547, matches UF002_MB_V02 */
-	qcom,pmic-id = <0x1000d 0 0 0>;  /* PM8909 */
+	compatible = "uf002,msm8909-mb-v02", "qcom,msm8909";
+	chassis-type = "dongle";
 
 	aliases {
-		serial0 = &blsp1_uart1;
+		serial0 = &blsp_uart1;
 	};
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		/* OpenWrt / Debian init */
-		bootargs = "console=ttyMSM0,115200n8 earlycon root=/dev/mapper/ufi002-root ro quiet";
-	};
-
-	memory {
-		device_type = "memory";
-		reg = <0x80000000 0x1e000000>;  /* 480 MB usable from 2 GB base */
+		bootargs = "console=ttyMSM0,115200n8 earlycon root=/dev/mmcblk0p21 rw rootwait";
 	};
 
 	/*
-	 * Reserved memory regions required by MSM8909 firmware
-	 * (modem, WCNSS, TrustZone, etc.)
-	 */
-	reserved-memory {
-		#address-cells = <1>;
-		#size-cells = <1>;
-		ranges;
-
-		/* Modem firmware */
-		modem_mem: modem_region@86800000 {
-			reg = <0x86800000 0x05400000>;
-			no-map;
-		};
-
-		/* WCNSS WiFi firmware */
-		wcnss_mem: wcnss_region@8b500000 {
-			reg = <0x8b500000 0x00600000>;
-			no-map;
-		};
-
-		/* Venus video - not used on dongle but keep for safety */
-		venus_mem: venus_region@8bb00000 {
-			reg = <0x8bb00000 0x00500000>;
-			no-map;
-		};
-
-		/* TrustZone app region */
-		tzapp_mem: tzapp_region@8c000000 {
-			reg = <0x8c000000 0x01400000>;
-			no-map;
-		};
-
-		/* mba (modem boot authenticator) */
-		mba_mem: mba_region@8e400000 {
-			reg = <0x8e400000 0x00200000>;
-			no-map;
-		};
-	};
-
-	/*
-	 * USB VBUS regulator - no VBUS on dongle (it IS the USB device)
-	 * Keep as dummy/always-off
+	 * USB VBUS regulator - dongle operates purely in gadget/peripheral mode.
 	 */
 	usb_vbus: usb-vbus-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "usb_vbus";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
-		regulator-boot-on;
 		regulator-always-on;
-		enable-active-high;
+		regulator-boot-on;
 	};
 };
 
-/* ============================================================
- * UART (debug serial - TX/RX test points on board)
- * ============================================================ */
-&blsp1_uart1 {
+/* UART debug console */
+&blsp_uart1 {
 	status = "okay";
 };
 
-/* ============================================================
- * eMMC / SDCC1 (Kingston 04EMCP04 - 4 GB)
- * Mapping: PM8909_L5 @ 1.8V (vdd-io), PM8909_L8 @ 2.85V (vdd)
- * From live kernel: 7824900.sdhci consumers
- * ============================================================ */
+/* eMMC storage (Kingston 04EMCP04 4GB) */
 &sdhc_1 {
 	status = "okay";
-	vmmc-supply = <&pm8909_l8>;
-	vqmmc-supply = <&pm8909_l5>;
-
 	bus-width = <8>;
 	non-removable;
-	mmc-hs200-1_8v;
 };
 
-/* ============================================================
- * USB OTG / Gadget Controller
- * Address: 78d9000.usb (msm_otg / ChipIdea HDRC)
- *
- * EXACT regulator mapping confirmed from UF002_MB_V02 live kernel:
- *   hsusb_vdd_dig-supply  = PM8909_L2  @ 1200000 uV
- *   HSUSB_1p8-supply      = PM8909_L7  @ 1800000 uV
- *   HSUSB_3p3-supply      = PM8909_L13 @ 3075000 uV
- *
- * USB ID: Vendor=05C6 Product=90B4 (Qualcomm 4G composite)
- * Mode: peripheral (gadget) - dongle is always USB device, never host
- * Functions: RNDIS (Ethernet), CDC-ACM (serial/debug)
- * ============================================================ */
+/* USB 2.0 Gadget Controller */
 &usb {
-	status = "okay";
-
-	/* Power rails - UF002_MB_V02 specific */
-	hsusb_vdd_dig-supply  = <&pm8909_l2>;
-	HSUSB_1p8-supply      = <&pm8909_l7>;
-	HSUSB_3p3-supply      = <&pm8909_l13>;
-
-	qcom,vdd-voltage-level = <1 1050000 1200000>;
-
-	/* Always peripheral mode - dongle is plugged into PC */
 	dr_mode = "peripheral";
-
-	/* USB gadget functions */
-	extcon = <&pm8909_pon>;
-
-	/* PHY tune for UF002_MB_V02 (from DW01 DTS as reference) */
-	qcom,hsusb-otg-phy-init-seq =
-		<0x44 0x80 0x79 0x81 0x24 0x82 0x13 0x83 0xffffffff>;
-};
-
-/* ============================================================
- * WCNSS / WiFi (WCN3620 - Pronto)
- * Power supplies (from DW01 DTS reference):
- *   vddxo-supply  = PM8909_L7  @ 1800000 uV
- *   vddrfa-supply = PM8909_L10 @ (probe from stock)
- *   vddpa-supply  = PM8909_L11
- *   vdddig-supply = PM8909_L2  @ 1200000 uV (shared)
- *
- * Firmware blobs (read-only from persist partition):
- *   WCNSS_wlan_dictionary.dat
- *   WCNSS_qcom_wlan_nv.bin
- *   WCNSS_qcom_cfg.ini
- * ============================================================ */
-&wcnss {
 	status = "okay";
-
-	vddxo-supply  = <&pm8909_l7>;
-	vddrfa-supply = <&pm8909_l10>;
-	vddpa-supply  = <&pm8909_l11>;
-	vdddig-supply = <&pm8909_l2>;
 };
 
-/* ============================================================
- * PM8909 Regulators - voltage configuration for UF002_MB_V02
- * ============================================================ */
-&pm8909_l2 {
-	/* USB VDD_DIG + WCNSS digital */
-	regulator-min-microvolt = <1200000>;
-	regulator-max-microvolt = <1200000>;
+&usb_hs_phy {
+	status = "okay";
 };
 
-&pm8909_l5 {
-	/* eMMC vdd-io */
-	regulator-min-microvolt = <1800000>;
-	regulator-max-microvolt = <1800000>;
-};
+/* Voltage Regulators from PM8909 */
+&smd_rpm_regulators {
+	s2 {
+		regulator-min-microvolt = <1850000>;
+		regulator-max-microvolt = <1850000>;
+	};
 
-&pm8909_l7 {
-	/* USB HSUSB_1p8 + WCNSS XO */
-	regulator-min-microvolt = <1800000>;
-	regulator-max-microvolt = <1800000>;
-};
+	l1 {
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <1000000>;
+	};
 
-&pm8909_l8 {
-	/* eMMC vdd */
-	regulator-min-microvolt = <2850000>;
-	regulator-max-microvolt = <2900000>;
-};
+	/* USB VDD_DIG: 1.2V */
+	l2 {
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+		regulator-always-on;
+	};
 
-&pm8909_l10 {
-	/* WCNSS RFA */
-	regulator-min-microvolt = <1225000>;
-	regulator-max-microvolt = <1300000>;
-};
+	l4 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
 
-&pm8909_l11 {
-	/* WCNSS PA */
-	regulator-min-microvolt = <1800000>;
-	regulator-max-microvolt = <2950000>;
-};
+	/* eMMC vqmmc / IO: 1.8V */
+	l5 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
 
-&pm8909_l13 {
-	/* USB HSUSB_3p3 */
-	regulator-min-microvolt = <3075000>;
-	regulator-max-microvolt = <3075000>;
-};
+	l6 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
 
-/* ============================================================
- * Thermal zones - CPU passive throttle at 75°C (DW01 reference)
- * ============================================================ */
-&thermal_zones {
-	cpu-thermal {
-		polling-delay-passive = <250>;
-		polling-delay = <0>;
-		thermal-sensors = <&tsens0 7>;
+	/* USB HSUSB_1p8 & WCNSS vddxo: 1.8V */
+	l7 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+	};
 
-		trips {
-			cpu_passive: trip0 {
-				temperature = <75000>;
-				hysteresis = <2000>;
-				type = "passive";
-			};
-			cpu_critical: trip1 {
-				temperature = <90000>;
-				hysteresis = <2000>;
-				type = "critical";
-			};
-		};
+	/* eMMC vmmc / Core: 2.85V */
+	l8 {
+		regulator-min-microvolt = <2850000>;
+		regulator-max-microvolt = <2850000>;
+		regulator-always-on;
+	};
+
+	l9 {
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	l10 {
+		regulator-min-microvolt = <1225000>;
+		regulator-max-microvolt = <1300000>;
+	};
+
+	l11 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <2950000>;
+	};
+
+	l12 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <2950000>;
+	};
+
+	/* USB HSUSB_3p3: 3.075V */
+	l13 {
+		regulator-min-microvolt = <3075000>;
+		regulator-max-microvolt = <3075000>;
+		regulator-always-on;
+	};
+
+	l14 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3000000>;
+	};
+
+	l15 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3000000>;
+	};
+
+	l17 {
+		regulator-min-microvolt = <2850000>;
+		regulator-max-microvolt = <2850000>;
+	};
+
+	l18 {
+		regulator-min-microvolt = <2700000>;
+		regulator-max-microvolt = <2700000>;
 	};
 };
