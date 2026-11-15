@@ -3,7 +3,7 @@ name: Build UF002 Custom Boot Image
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # Manual trigger button on GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,15 +11,9 @@ jobs:
     timeout-minutes: 90
 
     steps:
-    # ─────────────────────────────────────────────
-    # 1) Checkout this repo (gets our DTS file)
-    # ─────────────────────────────────────────────
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # ─────────────────────────────────────────────
-    # 2) Install ARM cross-compile tools
-    # ─────────────────────────────────────────────
     - name: Install build dependencies
       run: |
         sudo apt-get update -qq
@@ -29,82 +23,47 @@ jobs:
           make bc libssl-dev flex bison \
           device-tree-compiler \
           python3 git wget curl \
-          android-sdk-libsparse-utils \
+          busybox-static \
           mkbootimg || true
-
-        # Install mkbootimg if not found via apt
         if ! command -v mkbootimg &>/dev/null; then
-          pip3 install mkbootimg 2>/dev/null || \
-          wget -q https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/main.tar.gz -O mkbootimg.tar.gz && \
-          tar xf mkbootimg.tar.gz mkbootimg 2>/dev/null || true
+          pip3 install mkbootimg 2>/dev/null || true
         fi
 
-    # ─────────────────────────────────────────────
-    # 3) Clone MSM8909 mainline Linux kernel
-    # ─────────────────────────────────────────────
     - name: Clone MSM8909 kernel
       run: |
         git clone --depth=1 \
           https://github.com/msm8916-mainline/linux.git \
           kernel/
-        echo "Kernel version:"
-        cat kernel/Makefile | head -5
+        head -5 kernel/Makefile
 
-    # ─────────────────────────────────────────────
-    # 4) Copy our UF002_MB_V02 DTS into kernel tree
-    # ─────────────────────────────────────────────
-    - name: Install UF002_MB_V02 DTS
+    - name: Install UF002 DTS
       run: |
-        # Try to find the qcom dts directory
         DTS_DIR=""
-        for d in \
-          kernel/arch/arm/boot/dts/qcom \
-          kernel/arch/arm/boot/dts \
-          kernel/arch/arm64/boot/dts/qcom; do
-          if [ -d "$d" ]; then
-            DTS_DIR="$d"
-            break
-          fi
+        for d in kernel/arch/arm/boot/dts/qcom kernel/arch/arm/boot/dts kernel/arch/arm64/boot/dts/qcom; do
+          if [ -d "$d" ]; then DTS_DIR="$d"; break; fi
         done
-
         if [ -z "$DTS_DIR" ]; then
-          echo "ERROR: DTS directory not found!"
+          echo "ERROR: DTS dir not found"
           find kernel/arch -name "*.dts" | head -5
           exit 1
         fi
-
-        echo "Installing DTS to: $DTS_DIR"
+        echo "DTS dir: $DTS_DIR"
         cp dts/msm8909-uf002-mb-v02.dts "$DTS_DIR/"
-
-        # Find the Makefile for this dts dir
         MAKEFILE="$DTS_DIR/Makefile"
-        if [ -f "$MAKEFILE" ]; then
-          if ! grep -q "uf002" "$MAKEFILE"; then
-            echo "dtb-\$(CONFIG_ARCH_QCOM) += msm8909-uf002-mb-v02.dtb" >> "$MAKEFILE"
-            echo "Added to Makefile"
-          fi
-        else
-          echo "dtb-\$(CONFIG_ARCH_QCOM) += msm8909-uf002-mb-v02.dtb" > "$DTS_DIR/Makefile.uf002"
-          echo "Warning: Makefile not found, created separate file"
+        if [ -f "$MAKEFILE" ] && ! grep -q "uf002" "$MAKEFILE"; then
+          echo 'dtb-$(CONFIG_ARCH_QCOM) += msm8909-uf002-mb-v02.dtb' >> "$MAKEFILE"
+          echo "Added to Makefile"
         fi
 
-        echo "DTS installed successfully"
-
-    # ─────────────────────────────────────────────
-    # 5) Configure kernel
-    # ─────────────────────────────────────────────
     - name: Configure kernel
       working-directory: kernel
       env:
         ARCH: arm
         CROSS_COMPILE: arm-linux-gnueabihf-
       run: |
-        # Try different defconfigs
         make qcom_defconfig 2>/dev/null || \
         make msm8909_defconfig 2>/dev/null || \
         make multi_v7_defconfig
-
-        # Enable USB gadget / RNDIS / networking
         ./scripts/config \
           --enable CONFIG_USB_GADGET \
           --enable CONFIG_USB_CONFIGFS \
@@ -113,105 +72,48 @@ jobs:
           --enable CONFIG_USB_CONFIGFS_ACM \
           --enable CONFIG_USB_CHIPIDEA \
           --enable CONFIG_USB_CHIPIDEA_UDC \
-          --enable CONFIG_USB_PHY \
-          --enable CONFIG_NF_CONNTRACK \
-          --enable CONFIG_NF_NAT \
-          --enable CONFIG_IP_NF_NAT \
-          --enable CONFIG_IP_NF_IPTABLES \
-          --enable CONFIG_IP_NF_FILTER \
-          --enable CONFIG_IP_NF_TARGET_MASQUERADE \
-          --enable CONFIG_NETFILTER \
-          --enable CONFIG_BRIDGE \
-          --enable CONFIG_MMC_SDHCI_MSM \
+          --enable CONFIG_USB_CHIPIDEA_HOST \
+          --enable CONFIG_USB_ETH \
+          --enable CONFIG_USB_ETH_RNDIS \
+          --enable CONFIG_REGULATOR_PM8916 \
+          --enable CONFIG_MFD_SPMI_PMIC \
+          --enable CONFIG_SPMI \
           --enable CONFIG_SERIAL_MSM \
           --enable CONFIG_SERIAL_MSM_CONSOLE \
+          --enable CONFIG_CFG80211 \
+          --enable CONFIG_MAC80211 \
           --enable CONFIG_THERMAL \
           --enable CONFIG_CPUFREQ_DT
-
         make olddefconfig
 
-    # ─────────────────────────────────────────────
-    # 6) Compile kernel + DTB
-    # ─────────────────────────────────────────────
-    - name: Compile kernel
+    - name: Compile kernel and DTB
       working-directory: kernel
       env:
         ARCH: arm
         CROSS_COMPILE: arm-linux-gnueabihf-
       run: |
         make -j$(nproc) zImage dtbs 2>&1 | tee ../build.log
-        echo "=== Build status ==="
-        ls -lh arch/arm/boot/zImage 2>/dev/null && echo "zImage: OK" || echo "zImage: MISSING"
-        find arch/arm/boot/dts -name "*uf002*" 2>/dev/null && echo "DTB: OK" || echo "DTB: MISSING"
+        ls -lh arch/arm/boot/zImage 2>/dev/null && echo "zImage OK" || echo "zImage MISSING"
+        find arch/arm/boot/dts -name "*uf002*" 2>/dev/null && echo "DTB OK" || echo "DTB MISSING"
 
-    # ─────────────────────────────────────────────
-    # 7) Build boot.img
-    # ─────────────────────────────────────────────
     - name: Build boot.img
       run: |
         ZIMAGE="kernel/arch/arm/boot/zImage"
         DTB=$(find kernel/arch/arm/boot/dts -name "*uf002*.dtb" 2>/dev/null | head -1)
-
-        if [ ! -f "$ZIMAGE" ]; then
-          echo "ERROR: zImage not found!"
-          exit 1
-        fi
-
-        if [ -z "$DTB" ]; then
-          echo "WARNING: UF002 DTB not found, trying to compile manually..."
-          cd kernel
-          ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-            dtc -I dts -O dtb \
-            arch/arm/boot/dts/qcom/msm8909-uf002-mb-v02.dts \
-            -o arch/arm/boot/dts/qcom/msm8909-uf002-mb-v02.dtb || true
-          cd ..
-          DTB=$(find kernel/arch/arm/boot/dts -name "*uf002*.dtb" 2>/dev/null | head -1)
-        fi
-
+        if [ ! -f "$ZIMAGE" ]; then echo "ERROR: zImage missing"; exit 1; fi
         mkdir -p output
-
         if [ -n "$DTB" ]; then
-          echo "Using DTB: $DTB"
           cat "$ZIMAGE" "$DTB" > output/kernel_with_dtb.img
+          echo "Appended DTB: $DTB"
         else
-          echo "WARNING: No DTB found, using plain zImage"
           cp "$ZIMAGE" output/kernel_with_dtb.img
+          echo "No DTB, plain zImage"
         fi
-
-        # Create minimal ramdisk
-        mkdir -p tmp_rd/proc tmp_rd/sys tmp_rd/dev tmp_rd/mnt
-        cat > tmp_rd/init << 'INITEOF'
-#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devtmpfs dev /dev 2>/dev/null || mdev -s
-echo "UF002 boot - waiting for eMMC..."
-sleep 3
-# Try system partition (mmcblk0p21 based on partition table)
-for dev in mmcblk0p21 mmcblk0p20 mmcblk0p22; do
-  if mount /dev/$dev /mnt -o ro 2>/dev/null; then
-    if [ -x /mnt/sbin/init ] || [ -x /mnt/etc/rc.d/rcS ]; then
-      echo "Switching root to /dev/$dev"
-      exec switch_root /mnt /sbin/init
-    fi
-    umount /mnt
-  fi
-done
-echo "ERROR: rootfs not found, shell:"
-exec /bin/sh
-INITEOF
+        mkdir -p tmp_rd/proc tmp_rd/sys tmp_rd/dev tmp_rd/mnt tmp_rd/bin
+        printf '#!/bin/sh\nmount -t proc proc /proc\nmount -t sysfs sys /sys\nmount -t devtmpfs dev /dev 2>/dev/null || mdev -s\necho "UF002 booting..."\nexec /bin/sh\n' > tmp_rd/init
         chmod +x tmp_rd/init
-
-        # Try to get busybox for init
-        apt-get install -y busybox-static -qq 2>/dev/null || true
         cp /bin/busybox tmp_rd/bin/ 2>/dev/null || true
-        for cmd in sh mount umount echo sleep; do
-          ln -sf /bin/busybox tmp_rd/bin/$cmd 2>/dev/null || true
-        done
-
         (cd tmp_rd && find . | cpio -H newc -o | gzip > ../output/ramdisk.cpio.gz)
-
-        # Build Android boot.img
         if command -v mkbootimg &>/dev/null; then
           mkbootimg \
             --kernel output/kernel_with_dtb.img \
@@ -223,18 +125,13 @@ INITEOF
             --pagesize 2048 \
             --cmdline "console=ttyMSM0,115200n8 rw" \
             -o output/uf002-custom-boot.img
-          echo "boot.img created: $(ls -lh output/uf002-custom-boot.img)"
+          echo "boot.img done"
         else
-          echo "mkbootimg not available, packaging raw zImage+DTB"
           cp output/kernel_with_dtb.img output/uf002-kernel-dtb.img
         fi
-
         ls -lh output/
 
-    # ─────────────────────────────────────────────
-    # 8) Upload artifacts (download from GitHub)
-    # ─────────────────────────────────────────────
-    - name: Upload boot image
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: uf002-custom-boot-${{ github.run_number }}
@@ -243,7 +140,7 @@ INITEOF
           build.log
         retention-days: 30
 
-    - name: Upload build log
+    - name: Upload build log on failure
       if: always()
       uses: actions/upload-artifact@v4
       with:
