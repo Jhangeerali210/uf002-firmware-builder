@@ -1,0 +1,155 @@
+name: Build UF002 Custom Boot Image
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf \
+            make bc libssl-dev flex bison \
+            device-tree-compiler \
+            python3 python3-pip git wget curl cpio gzip \
+            mkbootimg || true
+          if ! command -v mkbootimg &>/dev/null; then
+            pip3 install mkbootimg || true
+          fi
+
+      - name: Clone MSM8909 kernel
+        run: |
+          git clone --depth=1 https://github.com/msm8916-mainline/linux.git kernel/
+          head -5 kernel/Makefile
+
+      - name: Install UF002 DTS
+        run: |
+          if [ ! -f "dts/msm8909-uf002-mb-v02.dts" ]; then
+            echo "ERROR: dts/msm8909-uf002-mb-v02.dts repository mein nahi mili!"
+            exit 1
+          fi
+          DTS_DIR=""
+          for d in kernel/arch/arm/boot/dts/qcom kernel/arch/arm/boot/dts; do
+            if [ -d "$d" ]; then DTS_DIR="$d"; break; fi
+          done
+          echo "Using DTS dir: $DTS_DIR"
+          cp dts/msm8909-uf002-mb-v02.dts "$DTS_DIR/"
+          MAKEFILE="$DTS_DIR/Makefile"
+          if [ -f "$MAKEFILE" ] && ! grep -q "msm8909-uf002-mb-v02.dtb" "$MAKEFILE"; then
+            echo "dtb-y += msm8909-uf002-mb-v02.dtb" >> "$MAKEFILE"
+          fi
+
+      - name: Configure kernel
+        working-directory: kernel
+        env:
+          ARCH: arm
+          CROSS_COMPILE: arm-linux-gnueabihf-
+        run: |
+          make qcom_defconfig 2>/dev/null || make multi_v7_defconfig
+          ./scripts/config \
+            --enable CONFIG_ARCH_QCOM \
+            --enable CONFIG_ARM_APPENDED_DTB \
+            --enable CONFIG_ARM_ATAG_DTB_COMPAT \
+            --enable CONFIG_BLK_DEV_INITRD \
+            --enable CONFIG_PINCTRL_MSM8909 \
+            --enable CONFIG_USB_GADGET \
+            --enable CONFIG_USB_CONFIGFS \
+            --enable CONFIG_USB_CONFIGFS_RNDIS \
+            --enable CONFIG_USB_CONFIGFS_NCM \
+            --enable CONFIG_USB_CONFIGFS_ACM \
+            --enable CONFIG_USB_CHIPIDEA \
+            --enable CONFIG_USB_CHIPIDEA_UDC \
+            --enable CONFIG_USB_CHIPIDEA_HOST \
+            --enable CONFIG_USB_ETH \
+            --enable CONFIG_USB_ETH_RNDIS \
+            --enable CONFIG_REGULATOR_PM8916 \
+            --enable CONFIG_MFD_SPMI_PMIC \
+            --enable CONFIG_SPMI \
+            --enable CONFIG_SERIAL_MSM \
+            --enable CONFIG_SERIAL_MSM_CONSOLE \
+            --enable CONFIG_QCOM_BAM_DMUX \
+            --enable CONFIG_QCOM_Q6V5_MSS \
+            --enable CONFIG_QCOM_WCNSS_PIL \
+            --enable CONFIG_CFG80211 \
+            --enable CONFIG_MAC80211 \
+            --enable CONFIG_THERMAL \
+            --enable CONFIG_CPUFREQ_DT
+          make olddefconfig
+
+      - name: Compile kernel and DTB
+        working-directory: kernel
+        env:
+          ARCH: arm
+          CROSS_COMPILE: arm-linux-gnueabihf-
+        run: |
+          set -o pipefail
+          make -j$(nproc) zImage dtbs 2>&1 | tee ../build.log
+          if ! find arch/arm/boot/dts -name "*uf002*.dtb" | grep -q .; then
+            dtc -I dts -O dtb -o arch/arm/boot/dts/msm8909-uf002-mb-v02.dtb ../dts/msm8909-uf002-mb-v02.dts
+          fi
+
+      - name: Build boot.img
+        run: |
+          ZIMAGE="kernel/arch/arm/boot/zImage"
+          DTB=$(find kernel/arch/arm/boot/dts -name "*uf002*.dtb" 2>/dev/null | head -1)
+          if [ ! -f "$ZIMAGE" ]; then echo "ERROR: zImage missing"; exit 1; fi
+          mkdir -p output
+          if [ -n "$DTB" ]; then
+            cat "$ZIMAGE" "$DTB" > output/kernel_with_dtb.img
+            echo "Appended DTB: $DTB"
+          else
+            echo "ERROR: DTB missing"; exit 1
+          fi
+
+          mkdir -p tmp_rd/proc tmp_rd/sys tmp_rd/dev tmp_rd/mnt tmp_rd/bin
+          wget -qO busybox.deb http://ftp.debian.org/debian/pool/main/b/busybox/busybox-static_1.35.0-4+b3_armhf.deb
+          dpkg-deb -x busybox.deb tmp_busybox
+          cp tmp_busybox/bin/busybox tmp_rd/bin/busybox
+          chmod +x tmp_rd/bin/busybox
+          ln -s busybox tmp_rd/bin/sh
+          ln -s busybox tmp_rd/bin/mount
+          ln -s busybox tmp_rd/bin/mdev
+
+          printf '#!/bin/sh\nmount -t proc proc /proc\nmount -t sysfs sys /sys\nmount -t devtmpfs dev /dev 2>/dev/null || mdev -s\necho "UF002 Mainline Linux booted!"\nexec /bin/sh\n' > tmp_rd/init
+          chmod +x tmp_rd/init
+          (cd tmp_rd && find . | cpio -H newc -o | gzip > ../output/ramdisk.cpio.gz)
+
+          mkbootimg \
+            --kernel output/kernel_with_dtb.img \
+            --ramdisk output/ramdisk.cpio.gz \
+            --base 0x80000000 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --pagesize 2048 \
+            --cmdline "console=ttyMSM0,115200n8 rw earlycon" \
+            -o output/uf002-custom-boot.img
+          ls -lh output/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: uf002-custom-boot-${{ github.run_number }}
+          path: |
+            output/
+            build.log
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          retention-days: 7
