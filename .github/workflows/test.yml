@@ -45,20 +45,26 @@ jobs:
           fi
           echo "Using DTS dir: $DTS_DIR"
 
-          # Create symlinks so #include "msm8909.dtsi" and pm8909 includes resolve cleanly
-          (
-            cd "$DTS_DIR"
-            [ -f "qcom-msm8909.dtsi" ] && [ ! -f "msm8909.dtsi" ] && ln -s qcom-msm8909.dtsi msm8909.dtsi
-            [ -f "qcom-pm8909.dtsi" ] && [ ! -f "pm8909.dtsi" ] && ln -s qcom-pm8909.dtsi pm8909.dtsi
-            [ -f "pm8909.dtsi" ] && [ ! -f "msm8909-pm8909.dtsi" ] && ln -s pm8909.dtsi msm8909-pm8909.dtsi
-            [ -f "qcom-pm8916.dtsi" ] && [ ! -f "pm8916.dtsi" ] && ln -s qcom-pm8916.dtsi pm8916.dtsi
-          )
+          if [ -d "kernel/arch/arm64/boot/dts/qcom" ]; then
+            cp -f kernel/arch/arm64/boot/dts/qcom/*.dtsi "$DTS_DIR/" || true
+          fi
 
-          cp dts/msm8909-uf002-mb-v02.dts "$DTS_DIR/"
+          if [ -f "$DTS_DIR/msm8909.dtsi" ] && [ ! -f "$DTS_DIR/qcom-msm8909.dtsi" ]; then
+            cp -f "$DTS_DIR/msm8909.dtsi" "$DTS_DIR/qcom-msm8909.dtsi" || true
+          fi
+          if [ -f "$DTS_DIR/qcom-msm8909.dtsi" ] && [ ! -f "$DTS_DIR/msm8909.dtsi" ]; then
+            cp -f "$DTS_DIR/qcom-msm8909.dtsi" "$DTS_DIR/msm8909.dtsi" || true
+          fi
+          if [ -f "$DTS_DIR/pm8909.dtsi" ] && [ ! -f "$DTS_DIR/msm8909-pm8909.dtsi" ]; then
+            cp -f "$DTS_DIR/pm8909.dtsi" "$DTS_DIR/msm8909-pm8909.dtsi" || true
+          fi
+
+          cp -f dts/msm8909-uf002-mb-v02.dts "$DTS_DIR/"
           MAKEFILE="$DTS_DIR/Makefile"
           if [ -f "$MAKEFILE" ] && ! grep -q "msm8909-uf002-mb-v02.dtb" "$MAKEFILE"; then
             echo "dtb-y += msm8909-uf002-mb-v02.dtb" >> "$MAKEFILE"
           fi
+          ls -la "$DTS_DIR"/*8909* || true
 
       - name: Configure kernel
         working-directory: kernel
@@ -106,6 +112,7 @@ jobs:
           set -o pipefail
           make -j$(nproc) zImage 2>&1 | tee ../build.log
           make -j$(nproc) dtbs 2>&1 | tee -a ../build.log || true
+          grep -i -C 5 "msm8909-uf002-mb-v02" ../build.log || true
 
       - name: Build boot.img
         run: |
@@ -115,7 +122,11 @@ jobs:
             DTB=$(find . -maxdepth 2 -name "*.dtb" 2>/dev/null | head -1)
           fi
           if [ ! -f "$ZIMAGE" ]; then echo "ERROR: zImage missing"; exit 1; fi
-          if [ -z "$DTB" ]; then echo "ERROR: Custom DTB failed to compile — check build.log"; exit 1; fi
+          if [ -z "$DTB" ]; then
+            echo "ERROR: Custom DTB failed to compile — see lines below:"
+            grep -i -C 8 "msm8909-uf002-mb-v02" build.log || tail -n 30 build.log
+            exit 1
+          fi
 
           mkdir -p output
           cat "$ZIMAGE" "$DTB" > output/kernel_with_dtb.img
