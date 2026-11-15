@@ -60,12 +60,23 @@
 };
 
 /* USB 2.0 Gadget Controller */
+/* vbus-supply: fixed 5V regulator (dongle is peripheral-only, VBUS from host) */
 &usb {
 	dr_mode = "peripheral";
+	usb-role-switch;
+	vbus-supply = <&usb_vbus>;
 	status = "okay";
 };
 
+/* USB HS PHY regulators — confirmed from live stock Android (78d9000.usb):
+ *   hsusb_vdd_dig → pm8909_l2 @ 1.2V
+ *   hsusb_1p8     → pm8909_l7 @ 1.8V
+ *   hsusb_3p3     → pm8909_l13 @ 3.075V
+ */
 &usb_hs_phy {
+	vdd-supply   = <&pm8909_l2>;
+	v1p8-supply  = <&pm8909_l7>;
+	v3p3-supply  = <&pm8909_l13>;
 	status = "okay";
 };
 
